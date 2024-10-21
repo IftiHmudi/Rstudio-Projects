@@ -1,0 +1,444 @@
+---
+title: "Predicting the Cost of Health Insurance"
+author: " Pstats 131 Habib Mahmud"
+date: "`r Sys.Date()`"
+output:
+    html_document:
+      toc: true
+      toc_float: true
+      code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,
+                      warning = FALSE)
+```
+
+![](img/mainpic.jpg)
+
+# Introduction
+
+## What is Health Insurance??
+
+Health Insurance is wide known type of service that all citizen must have. It is a financial backup that helps people cover medical bills by paying a monthly premium. Insurance covers basics like physical exams and medicine, but in case of something life-threatening happens the bills of the operation will be covered by a insurance company leaving you only to pay a reasonably reduced price. Insurance cost usually depends on the person and their health. 
+
+## WHY?? What the purpose of this Project?
+
+Health Insurance company determine the price of your monthly premium based on you some categories, like age, and smoking. Even though Health Insurance is mandatory for U.S. Citizens, it would be important to know what the average or what their cost should be based on their personal attributes. Knowing the cost of health insurance can help plan the monthly budget and how it could be distributed. There are multiple reasons for knowing the personal cost of insurance, which is why I was interested in analyzing this dataset. 
+
+## What this project will be doing?
+
+I have decided to take in the factors of age, sex, bmi (body mass index or weight/(height^2)), children, smoker, region, and charges to determine how these factors affect the charge variable and see if we can create a prediction on the cost based on peoples' personal attributes.
+
+# Getting Ready to Analyze
+
+## Loading all necessary packages
+
+```{r}
+# Loading all necessary packages
+library(tidyverse)
+library(tidymodels)
+library(janitor)
+library(corrplot)
+library(corrr)
+library(yardstick)
+library(kknn)
+library(glmnet)
+library(ranger)
+library(vip)
+
+insurance_data <- read.csv("data/insurance.csv")
+head(insurance_data)
+```
+This [dataset](https://www.kaggle.com/datasets/teertha/ushealthinsurancedataset/data) is provided by ANIRBAN DATTA, from the website Kaggle. This dataset was created for the purpose of analyzing and creating models for predicting Insurance Premium Charges. 
+
+## Organizing and Cleaning the Data
+
+As you can see from the head of the data we have 3 variables that we would want to convert to factors.\
+```{r}
+insurance_data$sex <- as.factor(insurance_data$sex)
+insurance_data$smoker <- as.factor(insurance_data$smoker)
+insurance_data$region <- as.factor(insurance_data$region)
+
+head(insurance_data)
+```
+
+Let's run a summary to see if the factor did its job properly.\
+```{r}
+summary(insurance_data)
+```
+As we can see it worked as planned.
+
+## Missing Data
+Now let us check to see if there is any missing data.\
+```{r}
+colSums(is.na(insurance_data))
+```
+Perfect there is no missing data. Now we can move onto the Exploratory Data Analysis.
+
+![](img/secondpic.jpg)
+
+# Visual EDA
+
+Now let's switch to seeing some preliminary visual data of the effects of specific attributes on the charge variable.\
+
+## BMI 
+```{r}
+ggplot(insurance_data, aes(x = bmi)) +
+  geom_histogram(binwidth = 1, color = "black", fill = "cyan") +
+  labs(title = "BMI Distribution",
+       x = "BMI",
+       y = "Freq")
+```
+\
+As we can see from the graph the BMI of the people in this dataset mostly range from 20 to 40 which according to National Heart, Lung, and Blood Institute is normal weight to obesity. So our data here captures a wide variety of people. Link to Website [here](https://www.nhlbi.nih.gov/health/educational/lose_wt/BMI/bmicalc.htm)\
+
+## Age vs Charges
+```{r}
+insurance_data %>% 
+  ggplot(aes(x=age, y=charges)) + 
+  geom_jitter(width = 0.5, size = 1) +
+  geom_smooth(method = "lm", se =F) +
+  labs(title = "age vs. charges")
+```
+\
+It is quite obvious that there is a relationship between age and charges as we see from the graph. As a person ages we see that their premium cost goes up. Other variable within the chart with higher charges might be due to BMI or Smoker, so let's check that out next.\
+
+## BMI VS Charges
+```{r}
+insurance_data %>% 
+  ggplot(aes(x=bmi, y=charges)) + 
+  geom_jitter(width = 0.5, size = 1) +
+  geom_smooth(method = "lm", se =F) +
+  labs(title = "BMI vs. charges")
+```
+\
+As I suspected, there is also a correlation between BMI and the rate of charges increasing. Even though it seems a little weak, we can see that there may be another factor that plays a role in affecting the charge portion.\
+
+## Smoker On Charges
+```{r}
+insurance_data %>%
+  ggplot(aes(x = smoker, y = charges, fill = smoker)) +
+  geom_boxplot() +
+  labs(title = "Comparison of Cost by Smoking Status",
+       x = "Smoking Status",
+       y = "Cost") +
+  theme_minimal()
+```
+\
+While there may be some outliers, we see that clearly there is a very large affect of whether or not the person is a smoker and the cost of their premiums on their insurance.\
+
+## Correlation Plot
+```{r}
+insurance_temp <- na.omit(insurance_data)
+insurance_temp <- insurance_temp %>% select_if(is.numeric)
+ins_cor <- cor(insurance_temp)
+ins_corrplot <- corrplot(ins_cor, method = "circle", type="upper",addCoef.col = 1)
+```
+![](img/hi2.jpg)
+\
+The correlation graph confirms my precognition that BMI, and Age affect the charges variable.
+Based on my research from all the data charts we see that BMI, Age, and smoking is main cause of why a person's cost of premiums could be so high.\ 
+
+# Setting Up the Model
+
+Now that we have a general sense of how our data set is and the intricacies of the relationship within the data we can know focus on creating models. Before we begin we should have a set seed, which lets us remember our data and how it was analyze so that we can repeat the process if we wanted to try the experiment again with the same results./
+```{r}
+set.seed(131)
+```
+
+## Splitting the Data
+Before we begin we to be able to have two separate dataset, one for training the model and one for testing the model. This is a key step that must be taken in order to create a machine learning model. The training data will be used so that we can have our model adjust to our specific criteria. The testing model is done to see how accurate our training model did. Once we have done the fitting we see which model performed the best based on the RMSE (Root Mean Square Error for regression). I will be doing a 70 30 split of the data, which means that 70% of the data will be allocated for training and 30% for testing. I find that this is a great balance, since we will have enough data to train and smaller but enough data to test. I will be stratifying on charges since we want to have a equal distribution of that variable throughout our training and test. Also we want to predict on the charge variable./
+
+```{r}
+insurance_split <- insurance_data %>%
+  initial_split(prop = 0.70, strata = charges)
+insurance_train <- training(insurance_split)
+insurance_test <- testing(insurance_split)
+```
+
+Before we move on we should if the split occurred properly.
+
+```{r}
+dim(insurance_train)
+```
+
+```{r}
+dim(insurance_test)
+```
+we see that the data was split properly and now we can move on.
+
+## Recipe Creation
+
+The recipe creation is a crucial part of forming our model. We use this as a way to clean, organize, and transform the raw data to a usable format in which we can input into your machine learning models. 
+For my model we will be using three predictors BMI, Age, Children, and whether or not they were a smoker. We will also dummy any categorical variables, in this case it would be Smoker. Lastly, we will use step_center() and step_scale() to normalize our variables. I chose to mainly focus on these 4 variables and not include region was because region had very little to do with the charges and I deemed it not worth including in the final model. 
+
+```{r}
+insurance_recipe <- recipe(charges ~ bmi + age + smoker + children, data = insurance_data) %>%
+  step_dummy(all_nominal()) %>%
+  step_center(all_predictors()) %>%
+  step_scale(all_predictors())
+```
+
+## K-Fold Validation
+
+K-Fold Cross Validation process similarly splits the dataset into ‘K’ smaller, equally sized portions or ‘folds.’ In this case we will be doing , so K is equal to 10. The model is then trained K times, each time using K-1 folds for training and the remaining one fold for testing the model. We calculate the performance of the model for each iteration and we average the performance measures from all K iterations to get a single, more reliable estimate of the model’s performance.
+
+We will stratify on the variable Charges as we did before.
+
+```{r}
+insurance_fold <- vfold_cv(insurance_train, v = 10, strata = charges)
+```
+
+# Model Building
+Now we will build our model. We will be using five different models: Linear Regression, Ridge Regression, K nearest neighbor, Elastic Net, and finally Random Forest. To test its performance we will using Root Mean Squared Error, or RMSE, as a metric in determining which model performed the best. The result of RMSE gives us a quantifiable way to determine the accuracy and precision of our model's prediction. It's done by measuring the average difference between the predicted values and the true values./
+
+## Fitting the Models
+
+now we setup the models and will be consistently incorporate the seed to avoid any errors in the computation.
+```{r}
+set.seed(131)
+# Linear Regression
+lm_model <- linear_reg() %>% 
+  set_engine("lm")
+
+# Ridge Regression
+ridge_spec <- linear_reg(mixture = 0, 
+                         penalty = tune()) %>% 
+  set_mode("regression") %>% 
+  set_engine("glmnet")
+
+# K Nearest Neighbor 
+knn_model <- nearest_neighbor(neighbors = tune()) %>% 
+  set_mode("regression") %>% 
+  set_engine("kknn")
+
+# Elastic Net
+elastic_spec <- linear_reg(penalty = tune(), 
+                           mixture = tune()) %>% 
+  set_mode("regression") %>% 
+  set_engine("glmnet")
+
+# Random Forest
+rf_spec <- rand_forest(mtry = tune(), 
+                       trees = tune(), 
+                       min_n = tune()) %>% 
+  set_engine("ranger", importance = "impurity") %>% 
+  set_mode("regression")
+```
+/
+
+Now we set up the work flow for each model and recipe.
+
+```{r}
+set.seed(131)
+# Linear Regression
+lm_workflow <- workflow() %>% 
+  add_model(lm_model) %>% 
+  add_recipe(insurance_recipe)
+
+# Ridge Regression
+ridge_workflow <- workflow() %>% 
+  add_recipe(insurance_recipe) %>% 
+  add_model(ridge_spec)
+
+# K Nearest Neighbor 
+knn_workflow <- workflow() %>% 
+  add_model(knn_model) %>% 
+  add_recipe(insurance_recipe)
+
+# Elastic Net
+elastic_workflow <- workflow() %>% 
+  add_recipe(insurance_recipe) %>% 
+  add_model(elastic_spec)
+
+# Random Forest
+rf_workflow <- workflow() %>% 
+  add_recipe(insurance_recipe) %>% 
+  add_model(rf_spec)
+```
+
+
+Now lets set up the tuning grids for all models, which is essentially a set of different parameters that help us get the optimal set of hyper parameter, which will output the highest performing model.
+```{r}
+lm_grid <- grid_regular(penalty(range = c(0,5)), levels = 50)
+knn_grid <- grid_regular(neighbors(range = c(1,10)), levels = 10)
+elastic_grid <- grid_regular(penalty(), 
+                             mixture(range = c(0, 1)),
+                             levels = 10)
+rf_parameter_grid <- grid_regular(mtry(range = c(1, 4)), 
+                                  trees(range = c(200,900)), 
+                                  min_n(range = c(5,20)), levels = 8)
+```
+
+## Tuning
+Now that we have our grid we can use this to tune our models using your insurance_fold dataset. 
+
+
+```{r}
+set.seed(131)
+
+# Ridge Regression
+ridge_tune <- tune_grid(
+  ridge_workflow,
+  resamples = insurance_fold,
+  grid = lm_grid
+)
+
+# K Nearest Neighbor 
+knn_tune <- tune_grid(
+  knn_workflow,
+  resamples = insurance_fold,
+  grid = knn_grid
+)
+
+#Elastic Net
+#elastic_tune <- tune_grid(
+  #elastic_workflow,
+  #resamples = insurance_fold,
+  #grid = elastic_grid
+#)
+
+#Random Forest
+#rf_tune_res <- tune_grid(
+ #rf_workflow,
+ #resamples = insurance_fold,
+ #grid = rf_parameter_grid
+#)
+
+
+save(ridge_tune, file = "rdafiles/ridge_tune.rda")
+save(knn_tune, file = "rdafiles/knn_tune.rda")
+#save(elastic_tune, file = "rdafiles/elastic_tune.rda")
+#save(rf_tune_res, file = "rdafiles/rf_tune_res.rda")
+```
+Now that we have the Elastic Net and Random Forest Models save we can just load it again to save time.
+```{r}
+load("rdafiles/ridge_tune.rda")
+load("rdafiles/knn_tune.rda")
+load("rdafiles/elastic_tune.rda")
+load("rdafiles/rf_tune_res.rda")
+```
+
+
+# Model Results
+
+## Testing Models for the Lowest RMSE  
+```{r}
+# Linear Regression
+lm_fit <- fit_resamples(lm_workflow, 
+                        resamples = insurance_fold)
+lm_rmse <- collect_metrics(lm_fit) %>% filter(.metric == "rmse")
+
+# K Nearest Neighbor 
+knn_rmse <- collect_metrics(knn_tune) %>% arrange(mean) %>% filter(.metric == "rmse")
+best_knn <- knn_rmse$mean[which.min(knn_rmse$mean)]
+
+# Ridge Regression
+ridge_rmse <- collect_metrics(ridge_tune) %>% filter(.metric == "rmse")
+best_ridge <- ridge_rmse$mean[which.min(ridge_rmse$mean)]
+  
+# Elastic Net
+elastic_rmse <- collect_metrics(elastic_tune) %>% arrange(mean) %>% filter(.metric == "rmse")
+best_elastic <- elastic_rmse$mean[which.min(elastic_rmse$mean)]
+
+# Random Forest
+rf_rmse <- collect_metrics(rf_tune_res) %>% arrange(mean) %>% filter(.metric == "rmse")
+best_rf <- rf_rmse$mean[which.min(rf_rmse$mean)]
+```
+
+## Compare the Model 
+
+```{r}
+compare <- tibble(Model = c("Linear Regression", "Ridge Regression", 
+                            "K Nearest Neighbors", "Elastic Net", 
+                            "Random Forest"), 
+                  RMSE = c(lm_rmse$mean, best_ridge, best_knn, best_elastic,
+                                        best_rf))
+
+compare %>% arrange(RMSE)
+```
+/
+As we can see Random Forest performed the best out of all 5 of the models, thus we will explore more into it. We also see that K Nearest Neighbor came in second to Random Forest./
+
+## AutoPlots
+
+### KNN Plot
+
+```{r}
+autoplot(knn_tune)
+```
+/
+As we can see as we increase the number of folds the RMSE decreases. This means that the model does better we increase the folds./
+
+### Elastic Plot
+
+```{r}
+autoplot(elastic_tune)
+```
+We see a lot of flat lines which indicates that the data is very noisy, but there are signs that as the amount of regularization increase the rmse is minimized./
+
+```{r}
+autoplot(rf_tune_res, metric="rmse")
+```
+/
+In the random forest we are tuning to the mtry, tree, min_n.mtry. Mtry is the number of predictor variables that are randomly sampled at each split in a tree. Trees is the number of trees in the random forest. Min_n is the minimum number of leaves of the trees node that are needed before it can split further. Here we have 4 trees and we can see that at 2 trees that tere is a very low rmse, but the general consensus is that as we increase the number of trees we get a lower rmse. /
+
+# Results From the Best Model
+
+## Fitting the Data
+
+Now we will input the testing data to the best model./
+```{r}
+best_rf_train <- select_best(rf_tune_res, metric = 'rmse')
+final_rf_model <- finalize_workflow(rf_workflow, best_rf_train)
+final_rf_model <- fit(final_rf_model, data = insurance_train)
+```
+
+## Which variables are importants??
+
+![](img/costs.jpg)
+
+```{r}
+final_rf_model %>% 
+  extract_fit_parsnip() %>% 
+  vip()
+```
+/
+Not surprisingly we see that the most important variable is the smoking factor. Smoking causes Lung Cancer, which is why it is reasonable to assume that the charges would cause the insurance premium to increase. /
+## Testing the Model
+Now lets test our model to the using the insurance_test data.
+```{r}
+insurance_tib <- predict(final_rf_model, new_data = insurance_test %>% select(-charges))
+insurance_tib <- bind_cols(insurance_tib, insurance_test %>% select(charges))
+
+insurance_tib %>% 
+  ggplot(aes(x = .pred, y = charges)) +
+  geom_point(alpha = 0.4) +
+  geom_abline(lty = 2) +
+  coord_obs_pred() +
+  labs(title = "Predicted Values vs. Actual Values")
+```
+By the graph we can tell that our model did extremely well compared to the testing data, which indicates that model is very accurate.
+
+![](img/hi.jpg)
+
+
+# Conclusion
+
+After cleaning the data, splitting into a train and test set, creating models, and training the model, we see that the Random Forest Model turned out to be the best model. It was able to very accurately predict the actual data using the same parameters. We also see, based on the low RMSE, that K-Nearest Neighbor was a viable option for our model. 
+
+In the end, we see that the Random Forest model was trained to be able to predict a charge based on a person's BMI, Age, and whether or not they smoked. Using these attributes our model was able to as I said before predict very well the testing data. I would use this model as a base line to tell how much a person's insurance might cost, but I would not solely base it on this model. Our model was very simplistic, and does not account for environmental factors, which can play a huge role in terms of cost of premiums. 
+
+I really did not encounter any major problems. My dataset was very clean and there was no missing data which made my job a lot easier. My model came out just as I expected it to as well. 
+
+# Sources
+
+[Link](https://www.kaggle.com/datasets/teertha/ushealthinsurancedataset/data) to the dataset provided by ANIRBAN DATTA, from the website Kaggle.
+For organization and format I used the Pokemon Example in the Final Project Examples.
+
+
+
+
+
+
